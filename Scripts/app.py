@@ -100,6 +100,7 @@ def make_css(c):
         transition: background 0.3s, color 0.3s;
     }}
     .app-shell {{ display: flex; height: 100vh; }}
+    #active_theme, label[for=active_theme] {{ display: none; }}
     .sidebar {{
         width: 220px; min-width: 220px;
         background: {c['sidebar_bg']}; color: {c['sidebar_text']};
@@ -320,32 +321,35 @@ def make_settings_page():
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 app_ui = ui.tags.div(
-    {"class": "app-shell"},
     ui.tags.style(make_css(THEMES["light"]), id="themeStyle"),
-    ui.tags.div({"class": "sidebar-trigger", "id": "sidebarTrigger"}),
-    ui.tags.button("◀", id="sidebarToggle", **{"class": "sidebar-toggle"}),
-
+    ui.input_text("active_theme", label="", value="light"),
     ui.tags.div(
-        {"class": "sidebar", "id": "sidebar"},
-        ui.tags.div("MyApp", **{"class": "app-title"}),
-        ui.tags.span("Menu", **{"class": "sidebar-label"}),
-        ui.tags.button("🏠  Dashboard", **{"class": "sidebar-item active", "onclick": "setPage('dashboard')"}),
-        ui.tags.button("📊  Analysis",  **{"class": "sidebar-item",        "onclick": "setPage('analysis')"}),
-        ui.tags.button("📁  Projects",  **{"class": "sidebar-item",        "onclick": "setPage('projects')"}),
-        ui.tags.button("👤  Users",     **{"class": "sidebar-item",        "onclick": "setPage('users')"}),
-        ui.tags.span("Other", **{"class": "sidebar-label"}),
-        ui.tags.button("⚙️  Settings",  **{"class": "sidebar-item",        "onclick": "setPage('settings')"}),
-        ui.tags.button("❓  Help",      **{"class": "sidebar-item",        "onclick": "setPage('help')"}),
-    ),
+        {"class": "app-shell"},
+        ui.tags.div({"class": "sidebar-trigger", "id": "sidebarTrigger"}),
+        ui.tags.button("◀", id="sidebarToggle", **{"class": "sidebar-toggle"}),
 
-    ui.tags.div(
-        {"class": "main-content"},
-        make_page("dashboard", "Dashboard", "Welcome to your dashboard.", active=True),
-        make_analysis_page(),
-        make_page("projects",  "Projects",  "Browse and organise your projects."),
-        make_page("users",     "Users",     "Manage users and permissions."),
-        make_settings_page(),
-        make_page("help",      "Help",      "Documentation and support."),
+        ui.tags.div(
+            {"class": "sidebar", "id": "sidebar"},
+            ui.tags.div("MyApp", **{"class": "app-title"}),
+            ui.tags.span("Menu", **{"class": "sidebar-label"}),
+            ui.tags.button("🏠  Dashboard", **{"class": "sidebar-item active", "onclick": "setPage('dashboard')"}),
+            ui.tags.button("📊  Analysis",  **{"class": "sidebar-item",        "onclick": "setPage('analysis')"}),
+            ui.tags.button("📁  Projects",  **{"class": "sidebar-item",        "onclick": "setPage('projects')"}),
+            ui.tags.button("👤  Users",     **{"class": "sidebar-item",        "onclick": "setPage('users')"}),
+            ui.tags.span("Other", **{"class": "sidebar-label"}),
+            ui.tags.button("⚙️  Settings",  **{"class": "sidebar-item",        "onclick": "setPage('settings')"}),
+            ui.tags.button("❓  Help",      **{"class": "sidebar-item",        "onclick": "setPage('help')"}),
+        ),
+
+        ui.tags.div(
+            {"class": "main-content"},
+            make_page("dashboard", "Dashboard", "Welcome to your dashboard.", active=True),
+            make_analysis_page(),
+            make_page("projects",  "Projects",  "Browse and organise your projects."),
+            make_page("users",     "Users",     "Manage users and permissions."),
+            make_settings_page(),
+            make_page("help",      "Help",      "Documentation and support."),
+        ),
     ),
 
     ui.tags.script("""
@@ -356,8 +360,9 @@ app_ui = ui.tags.div(
             document.getElementById('themeStyle').textContent = theme === 'dark' ? darkCSS : lightCSS;
             document.getElementById('opt-light').classList.toggle('selected', theme === 'light');
             document.getElementById('opt-dark').classList.toggle('selected',  theme === 'dark');
-            // Notify Shiny so plots re-render with the new theme
-            if (window.Shiny) Shiny.setInputValue('active_theme', theme, {priority: 'event'});
+            const el = document.getElementById('active_theme');
+            el.value = theme;
+            el.dispatchEvent(new Event('change'));
         }
 
         const sidebar = document.getElementById('sidebar');
@@ -398,10 +403,8 @@ def server(input, output, session):
     returns     = returns.dropna()
     cum_returns = cum_returns.loc[returns.index]
 
-    # Reactive theme — reads input set by JS, defaults to "light"
     def current_theme() -> dict:
-        t = input.active_theme() if "active_theme" in input else "light"
-        return THEMES.get(t, THEMES["light"])
+        return THEMES.get(input.active_theme(), THEMES["light"])
 
     # ── Box plot builder ──────────────────────────────────────────────────────
     def make_box_fig(col: pd.Series, label: str, color: str) -> go.Figure:
@@ -467,23 +470,18 @@ def server(input, output, session):
 
     @render_widget("box_STOXX")
     def box_STOXX():
-        input.active_theme()   # declare reactive dependency
         return make_box_fig(returns["^STOXX"].dropna(), "STOXX", TICKER_COLORS[0])
 
     @render_widget("box_STOXX50E")
     def box_STOXX50E():
-        input.active_theme()   # declare reactive dependency
         return make_box_fig(returns["^STOXX50E"].dropna(), "STOXX 50", TICKER_COLORS[1])
 
     @render_widget("box_AEX")
     def box_AEX():
-        input.active_theme()   # declare reactive dependency
         return make_box_fig(returns["^AEX"].dropna(), "AEX", TICKER_COLORS[2])
 
-    # ── Cumulative returns line chart ─────────────────────────────────────────
     @render_widget("line_cum")
     def line_cum():
-        input.active_theme()   # declare reactive dependency
         theme = current_theme()
         fig   = go.Figure()
         for i, ticker in enumerate(TICKERS):
