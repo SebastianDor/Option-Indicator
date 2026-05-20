@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime
 import yfinance as yf
 import numpy as np
+import psutil
+import time
 
 
 # ── Data ──────────────────────────────────────────────────────────────────────
@@ -42,6 +44,8 @@ def get_index_returns(
 TICKERS       = ["^STOXX", "^STOXX50E", "^AEX"]
 TICKER_LABELS = {"^STOXX": "STOXX", "^STOXX50E": "STOXX 50", "^AEX": "AEX"}
 TICKER_COLORS = ["#4A90D9", "#E8734A", "#4CAF82"]
+
+REFRESH_CHOICES = {"0": "Off", "5": "5s", "10": "10s", "30": "30s", "60": "60s"}
 
 # ── Colour schemes ────────────────────────────────────────────────────────────
 THEMES = {
@@ -100,7 +104,10 @@ def make_css(c):
         transition: background 0.3s, color 0.3s;
     }}
     .app-shell {{ display: flex; height: 100vh; }}
-    #active_theme, label[for=active_theme] {{ display: none; }}
+    #active_theme, label[for=active_theme],
+    #proc_page, label[for=proc_page] {{ display: none; }}
+
+    /* ── Sidebar ── */
     .sidebar {{
         width: 220px; min-width: 220px;
         background: {c['sidebar_bg']}; color: {c['sidebar_text']};
@@ -150,6 +157,25 @@ def make_css(c):
     }}
     .sidebar-toggle:hover   {{ opacity: 1; }}
     .sidebar-toggle.collapsed {{ left: 0; }}
+
+    /* ── Refresh control in sidebar ── */
+    .refresh-control {{
+        padding: 0.5rem 1.25rem 0.75rem;
+        overflow: hidden;
+    }}
+    .refresh-control label {{
+        font-size: 0.7rem; text-transform: uppercase;
+        letter-spacing: 0.08em; color: {c['text_muted']};
+        display: block; margin-bottom: 0.4rem;
+    }}
+    .refresh-control select {{
+        width: 100%; background: {c['sidebar_hover']};
+        color: {c['sidebar_text']}; border: 1px solid {c['primary_dark']};
+        border-radius: 5px; padding: 0.3rem 0.5rem;
+        font-size: 0.82rem; cursor: pointer; outline: none;
+    }}
+
+    /* ── Main content ── */
     .main-content {{
         flex: 1; overflow-y: auto; padding: 2rem;
         background: {c['page_bg']}; transition: background 0.3s;
@@ -184,6 +210,44 @@ def make_css(c):
         gap: 1.25rem; margin-bottom: 1.5rem;
     }}
     .plot-row > * {{ min-width: 0; }}
+
+    /* ── Server stat cards ── */
+    .stat-row {{
+        display: grid; grid-template-columns: repeat(4, 1fr);
+        gap: 1.25rem; margin-bottom: 1.5rem;
+    }}
+    .stat-card {{
+        background: {c['card_bg']}; border: 1px solid {c['border']};
+        border-radius: 10px; padding: 1.25rem 1.5rem;
+    }}
+    .stat-card .stat-label {{
+        font-size: 0.75rem; text-transform: uppercase;
+        letter-spacing: 0.06em; color: {c['text_muted']}; margin-bottom: 0.4rem;
+    }}
+    .stat-card .stat-value {{
+        font-size: 1.6rem; font-weight: 700; color: {c['text_main']};
+    }}
+    .stat-card .stat-sub {{
+        font-size: 0.78rem; color: {c['text_muted']}; margin-top: 0.2rem;
+    }}
+
+    /* ── Process table ── */
+    .proc-table {{
+        width: 100%; border-collapse: collapse; font-size: 0.85rem;
+    }}
+    .proc-table th {{
+        text-align: left; padding: 0.5rem 0.75rem;
+        border-bottom: 2px solid {c['border']};
+        color: {c['text_muted']}; font-weight: 600;
+        font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+    }}
+    .proc-table td {{
+        padding: 0.45rem 0.75rem; border-bottom: 1px solid {c['border']};
+        color: {c['text_main']};
+    }}
+    .proc-table tr:last-child td {{ border-bottom: none; }}
+
+    /* ── Settings ── */
     .settings-page {{ max-width: 620px; }}
     .settings-section {{
         background: {c['settings_bg']}; border: 1px solid {c['settings_border']};
@@ -266,6 +330,32 @@ def make_analysis_page():
         ),
     )
 
+# ── Server page ───────────────────────────────────────────────────────────────
+def make_server_page():
+    return ui.tags.div(
+        {"class": "page", "id": "page-server"},
+        ui.tags.div(
+            {"class": "page-header"},
+            ui.tags.h1("Server"),
+            ui.tags.p("Live system resource usage and running processes."),
+        ),
+        # Stat cards
+        ui.tags.div(
+            {"class": "stat-row"},
+            ui.output_ui("stat_cpu"),
+            ui.output_ui("stat_ram"),
+            ui.output_ui("stat_disk"),
+            ui.output_ui("stat_uptime"),
+        ),
+        # Process table
+        ui.tags.div(
+            {"class": "plot-card"},
+            ui.tags.h3("Top Processes"),
+            ui.tags.p("Top 15 processes by CPU usage"),
+            ui.output_ui("proc_table"),
+        ),
+    )
+
 # ── Settings page ─────────────────────────────────────────────────────────────
 def make_settings_page():
     return ui.tags.div(
@@ -323,6 +413,7 @@ def make_settings_page():
 app_ui = ui.tags.div(
     ui.tags.style(make_css(THEMES["light"]), id="themeStyle"),
     ui.input_text("active_theme", label="", value="light"),
+    ui.input_numeric("proc_page", label="", value=1),
     ui.tags.div(
         {"class": "app-shell"},
         ui.tags.div({"class": "sidebar-trigger", "id": "sidebarTrigger"}),
@@ -334,18 +425,30 @@ app_ui = ui.tags.div(
             ui.tags.span("Menu", **{"class": "sidebar-label"}),
             ui.tags.button("🏠  Dashboard", **{"class": "sidebar-item active", "onclick": "setPage('dashboard')"}),
             ui.tags.button("📊  Analysis",  **{"class": "sidebar-item",        "onclick": "setPage('analysis')"}),
-            ui.tags.button("📁  Projects",  **{"class": "sidebar-item",        "onclick": "setPage('projects')"}),
+            ui.tags.button("🖥️  Server",    **{"class": "sidebar-item",        "onclick": "setPage('server')"}),
             ui.tags.button("👤  Users",     **{"class": "sidebar-item",        "onclick": "setPage('users')"}),
             ui.tags.span("Other", **{"class": "sidebar-label"}),
             ui.tags.button("⚙️  Settings",  **{"class": "sidebar-item",        "onclick": "setPage('settings')"}),
             ui.tags.button("❓  Help",      **{"class": "sidebar-item",        "onclick": "setPage('help')"}),
+            # Refresh control — shown only on Analysis and Server pages
+            ui.tags.span("Refresh", **{"class": "sidebar-label", "id": "refresh-label",
+                                       "style": "display:none"}),
+            ui.tags.div(
+                {"class": "refresh-control", "id": "refresh-control", "style": "display:none"},
+                ui.input_select(
+                    "refresh_interval",
+                    label="Auto-refresh",
+                    choices=REFRESH_CHOICES,
+                    selected="0",
+                ),
+            ),
         ),
 
         ui.tags.div(
             {"class": "main-content"},
             make_page("dashboard", "Dashboard", "Welcome to your dashboard.", active=True),
             make_analysis_page(),
-            make_page("projects",  "Projects",  "Browse and organise your projects."),
+            make_server_page(),
             make_page("users",     "Users",     "Manage users and permissions."),
             make_settings_page(),
             make_page("help",      "Help",      "Documentation and support."),
@@ -386,11 +489,22 @@ app_ui = ui.tags.div(
         sidebar.addEventListener('mouseleave', () => { if (!pinned) hideTimer = setTimeout(hideSidebar, 300); });
         sidebar.addEventListener('mouseenter', () => clearTimeout(hideTimer));
 
+        const REFRESH_PAGES = ['analysis', 'server'];
+
         function setPage(name) {
             document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             document.getElementById('page-' + name).classList.add('active');
             document.querySelectorAll('.sidebar-item').forEach(b => b.classList.remove('active'));
             event.currentTarget.classList.add('active');
+            const show = REFRESH_PAGES.includes(name);
+            document.getElementById('refresh-control').style.display = show ? 'block' : 'none';
+            document.getElementById('refresh-label').style.display   = show ? 'block' : 'none';
+        }
+
+        function updatePage(delta) {
+            const el = document.getElementById('proc_page');
+            el.value = Math.max(1, parseInt(el.value || 1) + delta);
+            el.dispatchEvent(new Event('change'));
         }
     """),
 )
@@ -398,10 +512,25 @@ app_ui = ui.tags.div(
 # ── Server ────────────────────────────────────────────────────────────────────
 def server(input, output, session):
 
-    # Data fetched once — never re-fetched on theme change
-    returns, cum_returns = get_index_returns(TICKERS)
-    returns     = returns.dropna()
-    cum_returns = cum_returns.loc[returns.index]
+    # ── Data — reactive so it can be refreshed ────────────────────────────────
+    market_data = reactive.Value(None)
+
+    def load_data():
+        r, c = get_index_returns(TICKERS)
+        r = r.dropna()
+        c = c.loc[r.index]
+        market_data.set((r, c))
+
+    # Load once at startup
+    load_data()
+
+    # ── Auto-refresh timer ────────────────────────────────────────────────────
+    @reactive.Effect
+    def _auto_refresh():
+        interval = int(input.refresh_interval())
+        if interval > 0:
+            reactive.invalidate_later(interval)
+            load_data()
 
     def current_theme() -> dict:
         return THEMES.get(input.active_theme(), THEMES["light"])
@@ -418,23 +547,13 @@ def server(input, output, session):
         mx    = float(np.max(pct))
 
         fig = go.Figure()
-
         fig.add_trace(go.Box(
-            y=pct,
-            x0=0,
-            name=label,
-            marker_color=color,
-            marker=dict(color=color, size=4),
-            boxmean="sd",
-            boxpoints="outliers",
-            hoverinfo="none",
-            width=0.4,
+            y=pct, x0=0, name=label,
+            marker_color=color, marker=dict(color=color, size=4),
+            boxmean="sd", boxpoints="outliers", hoverinfo="none", width=0.4,
         ))
-
         fig.add_trace(go.Scatter(
-            x=[0],
-            y=[med],
-            mode="markers",
+            x=[0], y=[med], mode="markers",
             marker=dict(size=12, opacity=0, color=color),
             showlegend=False,
             hovertemplate=(
@@ -448,76 +567,215 @@ def server(input, output, session):
                 "<extra></extra>"
             ),
         ))
-
         layout = plotly_layout(theme)
         layout["showlegend"] = False
-        layout["margin"] = dict(l=40, r=10, t=10, b=30)
-        layout["autosize"] = True
-        layout["xaxis"] = dict(
-            visible=False,
-            range=[-1, 1],
-            gridcolor=theme["plot_grid"],
-        )
-        layout["yaxis"] = dict(
-            title="Daily return (%)",
-            ticksuffix="%",
-            gridcolor=theme["plot_grid"],
-            zeroline=True,
-            zerolinecolor=theme["plot_grid"],
-        )
+        layout["margin"]     = dict(l=40, r=10, t=10, b=30)
+        layout["autosize"]   = True
+        layout["xaxis"]      = dict(visible=False, range=[-1, 1],
+                                    gridcolor=theme["plot_grid"])
+        layout["yaxis"]      = dict(title="Daily return (%)", ticksuffix="%",
+                                    gridcolor=theme["plot_grid"],
+                                    zeroline=True, zerolinecolor=theme["plot_grid"])
         fig.update_layout(**layout)
         return fig
 
     @render_widget("box_STOXX")
     def box_STOXX():
-        return make_box_fig(returns["^STOXX"].dropna(), "STOXX", TICKER_COLORS[0])
+        d = market_data()
+        if d is None: return go.Figure()
+        return make_box_fig(d[0]["^STOXX"].dropna(), "STOXX", TICKER_COLORS[0])
 
     @render_widget("box_STOXX50E")
     def box_STOXX50E():
-        return make_box_fig(returns["^STOXX50E"].dropna(), "STOXX 50", TICKER_COLORS[1])
+        d = market_data()
+        if d is None: return go.Figure()
+        return make_box_fig(d[0]["^STOXX50E"].dropna(), "STOXX 50", TICKER_COLORS[1])
 
     @render_widget("box_AEX")
     def box_AEX():
-        return make_box_fig(returns["^AEX"].dropna(), "AEX", TICKER_COLORS[2])
+        d = market_data()
+        if d is None: return go.Figure()
+        return make_box_fig(d[0]["^AEX"].dropna(), "AEX", TICKER_COLORS[2])
 
     @render_widget("line_cum")
     def line_cum():
+        d = market_data()
+        if d is None: return go.Figure()
         theme = current_theme()
         fig   = go.Figure()
         for i, ticker in enumerate(TICKERS):
-            col   = cum_returns[ticker].dropna()
+            col   = d[1][ticker].dropna()
             dates = col.index.to_pydatetime()
             fig.add_trace(go.Scatter(
-                x=dates,
-                y=col.values * 100,
-                name=TICKER_LABELS[ticker],
-                mode="lines",
+                x=dates, y=col.values * 100,
+                name=TICKER_LABELS[ticker], mode="lines",
                 line=dict(color=TICKER_COLORS[i], width=2),
                 hovertemplate="%{x|%d %b %Y}:  <b>%{y:.2f}%</b><extra>"
                               + TICKER_LABELS[ticker] + "</extra>",
             ))
         layout = plotly_layout(theme, height=380)
-        layout["xaxis"] = dict(
-            type="date",
-            gridcolor=theme["plot_grid"],
-            zeroline=False,
-        )
-        layout["yaxis"] = dict(
-            title="Cumulative return (%)",
-            ticksuffix="%",
-            gridcolor=theme["plot_grid"],
-            zeroline=True,
-            zerolinecolor=theme["plot_grid"],
-        )
+        layout["xaxis"] = dict(type="date", gridcolor=theme["plot_grid"], zeroline=False)
+        layout["yaxis"] = dict(title="Cumulative return (%)", ticksuffix="%",
+                               gridcolor=theme["plot_grid"], zeroline=True,
+                               zerolinecolor=theme["plot_grid"])
         layout["hovermode"] = "x unified"
-        layout["legend"] = dict(
-            orientation="h",
-            yanchor="bottom", y=1.02,
-            xanchor="right",  x=1,
-            bgcolor="rgba(0,0,0,0)",
-        )
+        layout["legend"]    = dict(orientation="h", yanchor="bottom", y=1.02,
+                                   xanchor="right", x=1, bgcolor="rgba(0,0,0,0)")
         fig.update_layout(**layout)
         return fig
+
+    # ── Server stat helpers ───────────────────────────────────────────────────
+    def _stat_card(label: str, value: str, sub: str = "") -> ui.Tag:
+        return ui.tags.div(
+            {"class": "stat-card"},
+            ui.tags.div(label, **{"class": "stat-label"}),
+            ui.tags.div(value, **{"class": "stat-value"}),
+            ui.tags.div(sub,   **{"class": "stat-sub"}) if sub else ui.tags.span(),
+        )
+
+    @render.ui
+    def stat_cpu():
+        interval = int(input.refresh_interval())
+        if interval > 0:
+            reactive.invalidate_later(interval)
+        pct = psutil.cpu_percent(interval=0.2)
+        cores = psutil.cpu_count(logical=True)
+        return _stat_card("CPU Usage", f"{pct:.1f}%", f"{cores} logical cores")
+
+    @render.ui
+    def stat_ram():
+        interval = int(input.refresh_interval())
+        if interval > 0:
+            reactive.invalidate_later(interval)
+        vm = psutil.virtual_memory()
+        used  = vm.used  / 1024**3
+        total = vm.total / 1024**3
+        return _stat_card("RAM Usage", f"{vm.percent:.1f}%",
+                          f"{used:.1f} / {total:.1f} GB")
+
+    @render.ui
+    def stat_disk():
+        interval = int(input.refresh_interval())
+        if interval > 0:
+            reactive.invalidate_later(interval)
+        dk = psutil.disk_usage("/")
+        used  = dk.used  / 1024**3
+        total = dk.total / 1024**3
+        return _stat_card("Disk Usage", f"{dk.percent:.1f}%",
+                          f"{used:.1f} / {total:.1f} GB")
+
+    @render.ui
+    def stat_uptime():
+        interval = int(input.refresh_interval())
+        if interval > 0:
+            reactive.invalidate_later(interval)
+        boot   = psutil.boot_time()
+        uptime = time.time() - boot
+        h, rem = divmod(int(uptime), 3600)
+        m, s   = divmod(rem, 60)
+        return _stat_card("Uptime", f"{h}h {m}m", f"Boot: {datetime.fromtimestamp(boot).strftime('%d %b %H:%M')}")
+
+    @render.ui
+    def proc_table():
+        interval = int(input.refresh_interval())
+        if interval > 0:
+            reactive.invalidate_later(interval)
+
+        SKIP = {"system idle process", "idle"}
+
+        proc_objs = list(psutil.process_iter(["pid", "name", "memory_percent", "status"]))
+
+        # Prime CPU counters
+        for p in proc_objs:
+            try:
+                p.cpu_percent(interval=None)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        time.sleep(0.3)
+
+        procs_info = []
+        cpu_count  = psutil.cpu_count(logical=True) or 1
+
+        for p in proc_objs:
+            try:
+                name = p.info["name"] or "—"
+                if name.lower() in SKIP:
+                    continue
+                cpu = p.cpu_percent(interval=None) / cpu_count
+                procs_info.append({
+                    "pid":    p.info["pid"],
+                    "name":   name,
+                    "cpu":    cpu,
+                    "mem":    p.info["memory_percent"] or 0.0,
+                    "status": p.info["status"] or "—",
+                })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        # Sort by CPU desc, then RAM desc
+        procs_info.sort(key=lambda x: (x["cpu"], x["mem"]), reverse=True)
+
+        # Pagination
+        page_size = 15
+        total     = len(procs_info)
+        n_pages   = max(1, (total + page_size - 1) // page_size)
+
+        try:
+            current_page = int(input.proc_page())
+        except:
+            current_page = 1
+        current_page = max(1, min(current_page, n_pages))
+
+        start = (current_page - 1) * page_size
+        chunk = procs_info[start : start + page_size]
+
+        rows = [
+            ui.tags.tr(
+                ui.tags.td(str(p["pid"])),
+                ui.tags.td(p["name"]),
+                ui.tags.td(f'{p["cpu"]:.1f}%'),
+                ui.tags.td(f'{p["mem"]:.1f}%'),
+                ui.tags.td(p["status"]),
+            )
+            for p in chunk
+        ]
+
+        # Pagination controls
+        pagination = ui.tags.div(
+            {"style": "display:flex; gap:0.5rem; align-items:center; margin-top:1rem; font-size:0.85rem;"},
+            ui.tags.button(
+                "← Prev",
+                id="proc_prev",
+                onclick="updatePage(-1)",
+                disabled=current_page <= 1,
+                style="padding:0.3rem 0.75rem; cursor:pointer; border-radius:5px; border:1px solid #ccc;",
+            ),
+            ui.tags.span(f"Page {current_page} of {n_pages}"),
+            ui.tags.button(
+                "Next →",
+                id="proc_next",
+                onclick="updatePage(1)",
+                disabled=current_page >= n_pages,
+                style="padding:0.3rem 0.75rem; cursor:pointer; border-radius:5px; border:1px solid #ccc;",
+            ),
+            ui.tags.span(f"({total} processes)", style="margin-left:0.5rem; color:#888;"),
+        )
+
+        return ui.tags.div(
+            ui.tags.table(
+                {"class": "proc-table"},
+                ui.tags.thead(ui.tags.tr(
+                    ui.tags.th("PID"),
+                    ui.tags.th("Name"),
+                    ui.tags.th("CPU %"),
+                    ui.tags.th("MEM %"),
+                    ui.tags.th("Status"),
+                )),
+                ui.tags.tbody(*rows),
+            ),
+            pagination,
+        )
 
 
 app = App(app_ui, server)
