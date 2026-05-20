@@ -42,7 +42,7 @@ def get_index_returns(
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TICKERS       = ["^STOXX", "^STOXX50E", "^AEX"]
-TICKER_LABELS = {"^STOXX": "STOXX", "^STOXX50E": "STOXX 50", "^AEX": "AEX"}
+TICKER_LABELS = {"^STOXX": "STOXX 600", "^STOXX50E": "STOXX 50", "^AEX": "AEX"}
 TICKER_COLORS = ["#4A90D9", "#E8734A", "#4CAF82"]
 
 REFRESH_CHOICES = {"0": "Off", "5": "5s", "10": "10s", "30": "30s", "60": "60s"}
@@ -297,8 +297,8 @@ def make_page(page_id, title, subtitle, active=False):
             ui.tags.h1(title),
             ui.tags.p(subtitle),
         ),
-        ui.tags.div("Placeholder — add your content here", **{"class": "placeholder-card"}),
-        ui.tags.div("Placeholder — add your content here", **{"class": "placeholder-card"}),
+        ui.tags.div("Placeholder", **{"class": "placeholder-card"}),
+        ui.tags.div("Placeholder", **{"class": "placeholder-card"}),
     )
 
 # ── Analysis page ─────────────────────────────────────────────────────────────
