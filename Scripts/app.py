@@ -39,6 +39,53 @@ def get_index_returns(
 
     return returns, cum_returns
 
+def get_live_prices(tickers):
+    prices = {}
+    for ticker in tickers:
+        try:
+            hist = yf.Ticker(ticker).history(period="5d", interval="1m")
+            prices[ticker] = float(hist["Close"].dropna().iloc[-1]) if not hist.empty else None
+        except Exception:
+            prices[ticker] = None
+    return prices
+
+def compute_live_log_return(live_prices: dict, tickers: list[str]) -> dict:
+    live_ret = {}
+    for ticker in tickers:
+        try:
+            live_px = live_prices.get(ticker)
+            if live_px is None:
+                live_ret[ticker] = None
+                continue
+            hist   = yf.Ticker(ticker).history(period="5d", interval="1d")
+            closes = hist["Close"].dropna()
+            if len(closes) < 2:
+                live_ret[ticker] = None
+                continue
+            prev_close = float(closes.iloc[-2])
+            live_ret[ticker] = float(np.log(live_px / prev_close))
+        except Exception:
+            live_ret[ticker] = None
+    return live_ret
+
+
+def compute_live_cum_return(cum_returns: pd.DataFrame, live_prices: dict, tickers: list[str]) -> dict:
+    live_cum = {}
+    for ticker in tickers:
+        try:
+            live_px = live_prices.get(ticker)
+            if live_px is None:
+                live_cum[ticker] = None
+                continue
+            last_cum   = cum_returns[ticker].dropna().iloc[-1]
+            hist_daily = yf.Ticker(ticker).history(period="5d", interval="1d")
+            last_close = float(hist_daily["Close"].dropna().iloc[-1])
+            first_close = last_close / (1 + last_cum)
+            live_cum[ticker] = live_px / first_close - 1
+        except Exception:
+            live_cum[ticker] = None
+    return live_cum
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TICKERS       = ["^STOXX", "^STOXX50E", "^AEX"]
@@ -512,43 +559,54 @@ app_ui = ui.tags.div(
 # ── Server ────────────────────────────────────────────────────────────────────
 def server(input, output, session):
 
-    # ── Data — reactive so it can be refreshed ────────────────────────────────
-    market_data = reactive.Value(None)
+    market_data    = reactive.Value(None)
+    live_data      = reactive.Value(None)
+    last_load_date = None  # plain Python variable, not reactive
 
     def load_data():
-        r, c = get_index_returns(TICKERS)
-        r = r.dropna()
-        c = c.loc[r.index]
-        market_data.set((r, c))
+        nonlocal last_load_date
+        today = datetime.now().date()
+        # Only reload historical data if it's a new day or we have nothing yet
+        if last_load_date != today or market_data.get() is None:
+            r, c = get_index_returns(TICKERS)
+            r = r.dropna()
+            c = c.loc[r.index]
+            market_data.set((r, c))
+            last_load_date = today
 
-    # Load once at startup
+    def load_live():
+        live_data.set(get_live_prices(TICKERS))
+
+    # initial load
     load_data()
+    load_live()
 
-    # ── Auto-refresh timer ────────────────────────────────────────────────────
     @reactive.Effect
     def _auto_refresh():
         interval = int(input.refresh_interval())
         if interval > 0:
             reactive.invalidate_later(interval)
-            load_data()
+            load_data()   # will only reload historical if date changed
+            load_live()   # always refresh live prices
 
     def current_theme() -> dict:
         return THEMES.get(input.active_theme(), THEMES["light"])
 
-    # ── Box plot builder ──────────────────────────────────────────────────────
-    def make_box_fig(col: pd.Series, label: str, color: str) -> go.Figure:
-        theme = current_theme()
-        pct   = col.values * 100
-        mn    = float(np.min(pct))
-        q1    = float(np.percentile(pct, 25))
-        med   = float(np.median(pct))
-        mean  = float(np.mean(pct))
-        q3    = float(np.percentile(pct, 75))
-        mx    = float(np.max(pct))
+    def make_box_fig(col: pd.Series, label: str, color: str, live_log_ret=None) -> go.Figure:
+        theme    = current_theme()
+        hist_pct = col.values * 100
+        all_pct  = np.append(hist_pct, live_log_ret * 100) if live_log_ret is not None else hist_pct
+
+        mn   = float(np.min(all_pct))
+        q1   = float(np.percentile(all_pct, 25))
+        med  = float(np.median(all_pct))
+        mean = float(np.mean(all_pct))
+        q3   = float(np.percentile(all_pct, 75))
+        mx   = float(np.max(all_pct))
 
         fig = go.Figure()
         fig.add_trace(go.Box(
-            y=pct, x0=0, name=label,
+            y=all_pct, x0=0, name=label,
             marker_color=color, marker=dict(color=color, size=4),
             boxmean="sd", boxpoints="outliers", hoverinfo="none", width=0.4,
         ))
@@ -567,12 +625,29 @@ def server(input, output, session):
                 "<extra></extra>"
             ),
         ))
+        if live_log_ret is not None:
+            live_pct = live_log_ret * 100
+            fig.add_trace(go.Scatter(
+                x=[0], y=[live_pct],
+                mode="markers+text",
+                marker=dict(
+                    symbol="x",
+                    size=12,
+                    color="#FFD700",
+                    line=dict(color="#FFD700", width=2),
+                ),
+                text=["  today"],
+                textposition="middle right",
+                textfont=dict(size=9, color="#FFD700"),
+                showlegend=False,
+                hovertemplate=f"<b>Today's return</b><br>{live_pct:.2f}%<extra></extra>",
+            ))
+
         layout = plotly_layout(theme)
         layout["showlegend"] = False
         layout["margin"]     = dict(l=40, r=10, t=10, b=30)
         layout["autosize"]   = True
-        layout["xaxis"]      = dict(visible=False, range=[-1, 1],
-                                    gridcolor=theme["plot_grid"])
+        layout["xaxis"]      = dict(visible=False, range=[-1, 1], gridcolor=theme["plot_grid"])
         layout["yaxis"]      = dict(title="Daily return (%)", ticksuffix="%",
                                     gridcolor=theme["plot_grid"],
                                     zeroline=True, zerolinecolor=theme["plot_grid"])
@@ -581,50 +656,105 @@ def server(input, output, session):
 
     @render_widget("box_STOXX")
     def box_STOXX():
-        d = market_data()
-        if d is None: return go.Figure()
-        return make_box_fig(d[0]["^STOXX"].dropna(), "STOXX", TICKER_COLORS[0])
+        d  = market_data()
+        lv = live_data()
+        if d is None:
+            return go.Figure()
+        live_ret = compute_live_log_return(lv, ["^STOXX"])["^STOXX"] if lv else None
+        return make_box_fig(d[0]["^STOXX"].dropna(), "STOXX 600", TICKER_COLORS[0], live_ret)
 
     @render_widget("box_STOXX50E")
     def box_STOXX50E():
-        d = market_data()
-        if d is None: return go.Figure()
-        return make_box_fig(d[0]["^STOXX50E"].dropna(), "STOXX 50", TICKER_COLORS[1])
+        d  = market_data()
+        lv = live_data()
+        if d is None:
+            return go.Figure()
+        live_ret = compute_live_log_return(lv, ["^STOXX50E"])["^STOXX50E"] if lv else None
+        return make_box_fig(d[0]["^STOXX50E"].dropna(), "STOXX 50", TICKER_COLORS[1], live_ret)
 
     @render_widget("box_AEX")
     def box_AEX():
-        d = market_data()
-        if d is None: return go.Figure()
-        return make_box_fig(d[0]["^AEX"].dropna(), "AEX", TICKER_COLORS[2])
+        d  = market_data()
+        lv = live_data()
+        if d is None:
+            return go.Figure()
+        live_ret = compute_live_log_return(lv, ["^AEX"])["^AEX"] if lv else None
+        return make_box_fig(d[0]["^AEX"].dropna(), "AEX", TICKER_COLORS[2], live_ret)
 
     @render_widget("line_cum")
     def line_cum():
-        d = market_data()
-        if d is None: return go.Figure()
+        d  = market_data()
+        lv = live_data()
+        if d is None:
+            return go.Figure()
         theme = current_theme()
         fig   = go.Figure()
+
         for i, ticker in enumerate(TICKERS):
-            col   = d[1][ticker].dropna()
-            dates = col.index.to_pydatetime()
+            col      = d[1][ticker].dropna()
+            ret_col  = d[0][ticker].dropna()
+            dates    = col.index.to_pydatetime()
+
+            # Align daily returns to cumulative index
+            ret_aligned = ret_col.reindex(col.index)
+
             fig.add_trace(go.Scatter(
-                x=dates, y=col.values * 100,
-                name=TICKER_LABELS[ticker], mode="lines",
+                x=dates,
+                y=col.values * 100,
+                name=TICKER_LABELS[ticker],
+                mode="lines",
                 line=dict(color=TICKER_COLORS[i], width=2),
-                hovertemplate="%{x|%d %b %Y}:  <b>%{y:.2f}%</b><extra>"
-                              + TICKER_LABELS[ticker] + "</extra>",
+                customdata=ret_aligned.values * 100,
+                hovertemplate=(
+                    "%{x|%d %b %Y}<br>"
+                    "Cumulative: <b>%{y:.2f}%</b><br>"
+                    "Day return: <b>%{customdata:.2f}%</b>"
+                    "<extra>" + TICKER_LABELS[ticker] + "</extra>"
+                ),
             ))
+
+        if lv:
+            live_cum = compute_live_cum_return(d[1], lv, TICKERS)
+            today    = datetime.now()
+            for i, ticker in enumerate(TICKERS):
+                lc = live_cum.get(ticker)
+                if lc is None:
+                    continue
+                last_date = d[1][ticker].dropna().index[-1].to_pydatetime()
+                last_val  = float(d[1][ticker].dropna().iloc[-1]) * 100
+                fig.add_trace(go.Scatter(
+                    x=[last_date, today], y=[last_val, lc * 100],
+                    mode="lines",
+                    line=dict(color=TICKER_COLORS[i], width=1.5, dash="dot"),
+                    showlegend=False, hoverinfo="skip",
+                ))
+                live_ret = compute_live_log_return(lv, [ticker])[ticker]
+                fig.add_trace(go.Scatter(
+                    x=[today], y=[lc * 100],
+                    mode="markers",
+                    marker=dict(symbol="circle", size=10, color=TICKER_COLORS[i],
+                                line=dict(color="white", width=1.5)),
+                    name=f"{TICKER_LABELS[ticker]} (live)",
+                    customdata=[[live_ret * 100 if live_ret is not None else float("nan")]],
+                    hovertemplate=(
+                        "%{x|%d %b %Y %H:%M}<br>"
+                        "Cumulative: <b>%{y:.2f}%</b><br>"
+                        "Day return: <b>%{customdata[0]:.2f}%</b>"
+                        "<extra>" + TICKER_LABELS[ticker] + " — live</extra>"
+                    ),
+                ))
+
         layout = plotly_layout(theme, height=380)
-        layout["xaxis"] = dict(type="date", gridcolor=theme["plot_grid"], zeroline=False)
-        layout["yaxis"] = dict(title="Cumulative return (%)", ticksuffix="%",
-                               gridcolor=theme["plot_grid"], zeroline=True,
-                               zerolinecolor=theme["plot_grid"])
+        layout["xaxis"]     = dict(type="date", gridcolor=theme["plot_grid"], zeroline=False)
+        layout["yaxis"]     = dict(title="Cumulative return (%)", ticksuffix="%",
+                                   gridcolor=theme["plot_grid"], zeroline=True,
+                                   zerolinecolor=theme["plot_grid"])
         layout["hovermode"] = "x unified"
         layout["legend"]    = dict(orientation="h", yanchor="bottom", y=1.02,
                                    xanchor="right", x=1, bgcolor="rgba(0,0,0,0)")
         fig.update_layout(**layout)
         return fig
 
-    # ── Server stat helpers ───────────────────────────────────────────────────
     def _stat_card(label: str, value: str, sub: str = "") -> ui.Tag:
         return ui.tags.div(
             {"class": "stat-card"},
@@ -638,7 +768,7 @@ def server(input, output, session):
         interval = int(input.refresh_interval())
         if interval > 0:
             reactive.invalidate_later(interval)
-        pct = psutil.cpu_percent(interval=0.2)
+        pct   = psutil.cpu_percent(interval=0.2)
         cores = psutil.cpu_count(logical=True)
         return _stat_card("CPU Usage", f"{pct:.1f}%", f"{cores} logical cores")
 
@@ -647,22 +777,20 @@ def server(input, output, session):
         interval = int(input.refresh_interval())
         if interval > 0:
             reactive.invalidate_later(interval)
-        vm = psutil.virtual_memory()
+        vm    = psutil.virtual_memory()
         used  = vm.used  / 1024**3
         total = vm.total / 1024**3
-        return _stat_card("RAM Usage", f"{vm.percent:.1f}%",
-                          f"{used:.1f} / {total:.1f} GB")
+        return _stat_card("RAM Usage", f"{vm.percent:.1f}%", f"{used:.1f} / {total:.1f} GB")
 
     @render.ui
     def stat_disk():
         interval = int(input.refresh_interval())
         if interval > 0:
             reactive.invalidate_later(interval)
-        dk = psutil.disk_usage("/")
+        dk    = psutil.disk_usage("/")
         used  = dk.used  / 1024**3
         total = dk.total / 1024**3
-        return _stat_card("Disk Usage", f"{dk.percent:.1f}%",
-                          f"{used:.1f} / {total:.1f} GB")
+        return _stat_card("Disk Usage", f"{dk.percent:.1f}%", f"{used:.1f} / {total:.1f} GB")
 
     @render.ui
     def stat_uptime():
@@ -673,7 +801,8 @@ def server(input, output, session):
         uptime = time.time() - boot
         h, rem = divmod(int(uptime), 3600)
         m, s   = divmod(rem, 60)
-        return _stat_card("Uptime", f"{h}h {m}m", f"Boot: {datetime.fromtimestamp(boot).strftime('%d %b %H:%M')}")
+        return _stat_card("Uptime", f"{h}h {m}m",
+                          f"Boot: {datetime.fromtimestamp(boot).strftime('%d %b %H:%M')}")
 
     @render.ui
     def proc_table():
@@ -681,22 +810,17 @@ def server(input, output, session):
         if interval > 0:
             reactive.invalidate_later(interval)
 
-        SKIP = {"system idle process", "idle"}
-
+        SKIP      = {"system idle process", "idle"}
         proc_objs = list(psutil.process_iter(["pid", "name", "memory_percent", "status"]))
-
-        # Prime CPU counters
         for p in proc_objs:
             try:
                 p.cpu_percent(interval=None)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-
         time.sleep(0.3)
 
         procs_info = []
         cpu_count  = psutil.cpu_count(logical=True) or 1
-
         for p in proc_objs:
             try:
                 name = p.info["name"] or "—"
@@ -713,17 +837,14 @@ def server(input, output, session):
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
 
-        # Sort by CPU desc, then RAM desc
         procs_info.sort(key=lambda x: (x["cpu"], x["mem"]), reverse=True)
 
-        # Pagination
-        page_size = 15
-        total     = len(procs_info)
-        n_pages   = max(1, (total + page_size - 1) // page_size)
-
+        page_size    = 15
+        total        = len(procs_info)
+        n_pages      = max(1, (total + page_size - 1) // page_size)
         try:
             current_page = int(input.proc_page())
-        except:
+        except Exception:
             current_page = 1
         current_page = max(1, min(current_page, n_pages))
 
@@ -741,24 +862,15 @@ def server(input, output, session):
             for p in chunk
         ]
 
-        # Pagination controls
         pagination = ui.tags.div(
             {"style": "display:flex; gap:0.5rem; align-items:center; margin-top:1rem; font-size:0.85rem;"},
-            ui.tags.button(
-                "← Prev",
-                id="proc_prev",
-                onclick="updatePage(-1)",
-                disabled=current_page <= 1,
-                style="padding:0.3rem 0.75rem; cursor:pointer; border-radius:5px; border:1px solid #ccc;",
-            ),
+            ui.tags.button("← Prev", id="proc_prev", onclick="updatePage(-1)",
+                           disabled=current_page <= 1,
+                           style="padding:0.3rem 0.75rem; cursor:pointer; border-radius:5px; border:1px solid #ccc;"),
             ui.tags.span(f"Page {current_page} of {n_pages}"),
-            ui.tags.button(
-                "Next →",
-                id="proc_next",
-                onclick="updatePage(1)",
-                disabled=current_page >= n_pages,
-                style="padding:0.3rem 0.75rem; cursor:pointer; border-radius:5px; border:1px solid #ccc;",
-            ),
+            ui.tags.button("Next →", id="proc_next", onclick="updatePage(1)",
+                           disabled=current_page >= n_pages,
+                           style="padding:0.3rem 0.75rem; cursor:pointer; border-radius:5px; border:1px solid #ccc;"),
             ui.tags.span(f"({total} processes)", style="margin-left:0.5rem; color:#888;"),
         )
 
@@ -766,11 +878,8 @@ def server(input, output, session):
             ui.tags.table(
                 {"class": "proc-table"},
                 ui.tags.thead(ui.tags.tr(
-                    ui.tags.th("PID"),
-                    ui.tags.th("Name"),
-                    ui.tags.th("CPU %"),
-                    ui.tags.th("MEM %"),
-                    ui.tags.th("Status"),
+                    ui.tags.th("PID"), ui.tags.th("Name"),
+                    ui.tags.th("CPU %"), ui.tags.th("MEM %"), ui.tags.th("Status"),
                 )),
                 ui.tags.tbody(*rows),
             ),
