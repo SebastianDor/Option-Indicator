@@ -11,31 +11,39 @@ import time
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 def get_index_returns(
-    tickers: list[str] = ["^STOXX", "^STOXX50E", "^AEX"],
-    years_back: int = 2,
+    tickers: list[str] = ["^STOXX", "^STOXX50E", "^AEX","^GSPC"],
+    years_back: int = 4,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     end_date   = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     start_date = end_date.replace(year=end_date.year - years_back)
-
-    df_multi = yf.download(
-        tickers=tickers,
-        start=start_date,
-        end=end_date,
-        interval="1d",
-        group_by="ticker",
-        auto_adjust=True,
-        progress=False,
-    )
 
     returns     = pd.DataFrame()
     cum_returns = pd.DataFrame()
 
     for ticker in tickers:
-        prices  = df_multi[ticker]["Close"]
-        log_ret = np.log(prices / prices.shift(1))
-        cum_ret = np.exp(log_ret.cumsum()) - 1
-        returns[ticker]     = log_ret
-        cum_returns[ticker] = cum_ret
+        try:
+            t      = yf.Ticker(ticker)
+            prices = t.history(start=start_date, end=end_date, interval="1d", auto_adjust=True)["Close"]
+
+            # Strip timezone if present, ignore if already naive
+            if hasattr(prices.index, "tz") and prices.index.tz is not None:
+                prices.index = prices.index.tz_localize(None)
+
+            if prices.dropna().empty:
+                print(f"[warning] No data for {ticker}")
+                returns[ticker]     = np.nan
+                cum_returns[ticker] = np.nan
+                continue
+
+            log_ret = np.log(prices / prices.shift(1))
+            cum_ret = np.exp(log_ret.cumsum()) - 1
+            returns[ticker]     = log_ret
+            cum_returns[ticker] = cum_ret
+
+        except Exception as e:
+            print(f"[warning] Failed {ticker}: {e}")
+            returns[ticker]     = np.nan
+            cum_returns[ticker] = np.nan
 
     return returns, cum_returns
 
@@ -88,9 +96,9 @@ def compute_live_cum_return(cum_returns: pd.DataFrame, live_prices: dict, ticker
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TICKERS       = ["^STOXX", "^STOXX50E", "^AEX"]
-TICKER_LABELS = {"^STOXX": "STOXX 600", "^STOXX50E": "STOXX 50", "^AEX": "AEX"}
-TICKER_COLORS = ["#4A90D9", "#E8734A", "#4CAF82"]
+TICKERS       = ["^STOXX", "^STOXX50E", "^AEX", "^GSPC"]
+TICKER_LABELS = {"^STOXX": "STOXX 600", "^STOXX50E": "STOXX 50", "^AEX": "AEX", "^GSPC": "S&P500"}
+TICKER_COLORS = ["#4A90D9", "#E8734A", "#4CAF82", "#A855F7"]
 
 REFRESH_CHOICES = {"0": "Off", "5": "5s", "10": "10s", "30": "30s", "60": "60s"}
 
