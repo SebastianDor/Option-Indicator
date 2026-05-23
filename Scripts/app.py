@@ -311,7 +311,7 @@ def make_css(c):
     .page-header h1 {{ font-size: 1.5rem; font-weight: 600; color: {c['text_main']}; }}
     .page-header p {{ font-size: 0.9rem; color: {c['text_muted']}; margin-top: 0.25rem; }}
     .placeholder-card {{ background: {c['card_bg']}; border-radius: 8px; padding: 2rem; margin-bottom: 1.5rem; min-height: 180px; display: flex; align-items: center; justify-content: center; color: {c['text_muted']}; font-size: 0.95rem; border: 2px dashed {c['border']}; }}
-    .plot-card {{ position: relative; background: {c['card_bg']}; border: 1px solid {c['border']}; border-radius: 10px; padding: 1.25rem 1.5rem; margin-bottom: 1.5rem; min-width: 0; overflow: hidden; }}
+    .plot-card {{ position: relative; background: {c['card_bg']}; border: 1px solid {c['border']}; border-radius: 10px; padding: 1rem 1.5rem; margin-bottom: 1.5rem; min-width: 0; overflow: hidden; }}
     .plot-card h3 {{ font-size: 0.95rem; font-weight: 600; color: {c['text_main']}; margin-bottom: 0.25rem; padding-right: 2rem; }}
     .plot-card p {{ font-size: 0.8rem; color: {c['text_muted']}; margin-bottom: 1rem; }}
     .plot-row {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.25rem; margin-bottom: 1.5rem; }}
@@ -375,6 +375,14 @@ def make_css(c):
     .badge.bull {{ background: rgba(22,163,74,0.12);  color: {c['positive']}; }}
     .badge.bear {{ background: rgba(220,38,38,0.12);  color: {c['negative']}; }}
     .cache-badge {{ display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem; color: {c['text_muted']}; background: {c['border']}; padding: 0.2rem 0.6rem; border-radius: 4px; margin-left: 0.75rem; }}
+    .cum-modal-overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; }}
+    .cum-modal-overlay.open {{ display:flex; }}
+    .cum-modal-box {{ background:{c['card_bg']}; border-radius:12px; padding:0; width:92vw; height:88vh; display:flex; flex-direction:column; overflow:hidden; position:relative; }}
+    .cum-modal-header {{ display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1rem; border-bottom:1px solid {c['border']}; flex-shrink:0; }}
+    .cum-modal-title {{ font-size:0.95rem; font-weight:600; color:{c['text_main']}; }}
+    .cum-modal-close {{ background:none; border:none; font-size:1.3rem; cursor:pointer; color:{c['text_muted']}; line-height:1; padding:0.2rem 0.4rem; border-radius:4px; }}
+    .cum-modal-close:hover {{ color:{c['text_main']}; background:{c['border']}; }}
+    #cum-modal-plot {{ flex:1; min-height:0; }}
     """
 
 def plotly_layout(theme: dict, height: int = 300) -> dict:
@@ -399,6 +407,22 @@ def make_page(page_id, title, subtitle, active=False):
 def make_analysis_page():
     return ui.tags.div(
         {"class": "page", "id": "page-analysis"},
+        ui.tags.div(
+            {"class": "cum-modal-overlay", "id": "cumModalOverlay",
+             "onclick": "if(event.target===this) closeCumModal()"},
+            ui.tags.div(
+                {"class": "cum-modal-box"},
+                ui.tags.div(
+                    {"class": "cum-modal-header"},
+                    ui.tags.span("Cumulative Returns", **{"class": "cum-modal-title"}),
+                    ui.tags.button("✕", **{
+                        "class":   "cum-modal-close",
+                        "onclick": "closeCumModal()",
+                    }),
+                ),
+                ui.tags.div({"id": "cum-modal-plot"}),
+            ),
+        ),        
         ui.tags.div({"class": "page-header"},
             ui.tags.h1("Analysis"),
             ui.tags.p("Index return distributions, cumulative performance and GJR-GARCH(1,1) forecasts.")),
@@ -428,7 +452,17 @@ def make_analysis_page():
         ),
         ui.tags.div({"class": "plot-card"},
             ui.tags.h3("Cumulative Returns"),
-            ui.tags.p("Log-cumulative returns across all indexes"),
+            ui.tags.button("⛶", **{
+                "id":      "btn-popout-cum",
+                "onclick": "popoutCumulative()",
+                "title":   "Pop out chart",
+                "style":   "position:absolute;top:0.85rem;right:0.85rem;"
+                           "background:none;border:none;cursor:pointer;"
+                           "font-size:1.1rem;opacity:0.5;"
+                           "transition:opacity 0.15s;",
+                "onmouseover": "this.style.opacity='1'",
+                "onmouseout":  "this.style.opacity='0.5'",
+            }),
             output_widget("line_cum")),
     )
 
@@ -511,22 +545,27 @@ app_ui = ui.tags.div(
     ui.tags.style(make_css(THEMES["light"]), id="themeStyle"),
     ui.input_text("active_theme", label="", value="light"),
     ui.input_numeric("proc_page", label="", value=1),
+
     ui.tags.div(
         {"class": "app-shell"},
         ui.tags.div({"class": "sidebar-trigger", "id": "sidebarTrigger"}),
         ui.tags.button("◀", id="sidebarToggle", **{"class": "sidebar-toggle"}),
+
         ui.tags.div(
             {"class": "sidebar", "id": "sidebar"},
             ui.tags.div("MyApp", **{"class": "app-title"}),
+
             ui.tags.span("Menu", **{"class": "sidebar-label"}),
             ui.tags.button("🏠  Dashboard",   **{"class": "sidebar-item active", "onclick": "setPage('dashboard')"}),
             ui.tags.button("📊  Analysis",    **{"class": "sidebar-item",        "onclick": "setPage('analysis')"}),
             ui.tags.button("🎯  Directional", **{"class": "sidebar-item",        "onclick": "setPage('directional')"}),
             ui.tags.button("🖥️  Server",      **{"class": "sidebar-item",        "onclick": "setPage('server')"}),
             ui.tags.button("👤  Users",       **{"class": "sidebar-item",        "onclick": "setPage('users')"}),
+
             ui.tags.span("Other", **{"class": "sidebar-label"}),
             ui.tags.button("⚙️  Settings",    **{"class": "sidebar-item",        "onclick": "setPage('settings')"}),
             ui.tags.button("❓  Help",        **{"class": "sidebar-item",        "onclick": "setPage('help')"}),
+
             ui.tags.span("Refresh", **{
                 "class": "sidebar-label",
                 "id":    "refresh-label",
@@ -538,6 +577,7 @@ app_ui = ui.tags.div(
                                 choices=REFRESH_CHOICES, selected="0"),
             ),
         ),
+
         ui.tags.div(
             {"class": "main-content"},
             make_page("dashboard", "Dashboard", "Welcome to your dashboard.", active=True),
@@ -550,6 +590,7 @@ app_ui = ui.tags.div(
         ),
     ),
 
+    # Theme + sidebar + navigation script (f-string)
     ui.tags.script(f"""
         const lightCSS = `{_light_css}`;
         const darkCSS  = `{_dark_css}`;
@@ -612,6 +653,94 @@ app_ui = ui.tags.div(
             dist.classList.toggle('hidden', !showingBox);
             btn.classList.toggle('active',   showingBox);
         }}
+    """),
+
+    # Popout cumulative chart script (plain string, no f-string)
+    ui.tags.script("""
+        function popoutCumulative() {
+            const container = document.getElementById('line_cum');
+            const plotDiv   = container ? container.querySelector('.js-plotly-plot') : null;
+            if (!plotDiv || !plotDiv.data) {
+                alert('Chart not ready yet.');
+                return;
+            }
+
+            const overlay = document.getElementById('cumModalOverlay');
+            const target  = document.getElementById('cum-modal-plot');
+            overlay.classList.add('open');
+
+            // Copy layout including current zoom/pan state
+            const layout = {
+                ...plotDiv.layout,
+                autosize: true,
+                modebar: { orientation: 'v', bgcolor: 'rgba(0,0,0,0)' },
+            };
+            delete layout.width;
+            delete layout.height;
+
+            Plotly.newPlot(target, plotDiv.data, layout,
+                {responsive: true, displayModeBar: true, displaylogo: false})
+            .then(function() {
+                window._cumModalPlot = target;
+
+                // Sync zoom/pan from modal back to the original chart
+                target.on('plotly_relayout', function(ed) {
+                    if (!ed['xaxis.range[0]']) return;
+                    Plotly.relayout(plotDiv, {
+                        'xaxis.range[0]': ed['xaxis.range[0]'],
+                        'xaxis.range[1]': ed['xaxis.range[1]'],
+                    });
+                });
+
+                // Sync legend visibility from modal back to original
+                target.on('plotly_restyle', function(ed) {
+                    Plotly.restyle(plotDiv, ed[0], ed[1]);
+                });
+            });
+        }
+
+        function closeCumModal() {
+            const overlay = document.getElementById('cumModalOverlay');
+            const target  = document.getElementById('cum-modal-plot');
+            const container = document.getElementById('line_cum');
+            const plotDiv   = container ? container.querySelector('.js-plotly-plot') : null;
+
+            // Sync zoom state back to the small chart on close
+            if (plotDiv && target && target.layout) {
+                const xl = target.layout.xaxis || {};
+                const yl = target.layout.yaxis || {};
+                const update = {};
+                if (xl.range) {
+                    update['xaxis.range[0]'] = xl.range[0];
+                    update['xaxis.range[1]'] = xl.range[1];
+                }
+                if (yl.range) {
+                    update['yaxis.range[0]'] = yl.range[0];
+                    update['yaxis.range[1]'] = yl.range[1];
+                }
+                if (Object.keys(update).length) {
+                    Plotly.relayout(plotDiv, update);
+                }
+
+                // Sync legend visibility (which traces are hidden)
+                if (target.data && plotDiv.data) {
+                    const visUpdate = target.data.map(function(t) { return t.visible; });
+                    Plotly.restyle(plotDiv, {visible: visUpdate});
+                }
+            }
+
+            // Purge modal plot to free memory
+            if (window._cumModalPlot) {
+                Plotly.purge(target);
+                window._cumModalPlot = null;
+            }
+
+            overlay.classList.remove('open');
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeCumModal();
+        });
     """),
 )
 
@@ -1209,103 +1338,132 @@ def server(input, output, session):
     def line_cum():
         d  = market_data()
         lv = live_data()
-        if d is None: return go.Figure()
-        theme = current_theme()
-        fig   = go.Figure()
+        if d is None:
+            return go.Figure()
+
+        theme    = current_theme()
+        fig      = go.Figure()
+        fc_cum   = forecast_cum.get()
+        live_cum = compute_live_cum_return(d[1], lv, TICKERS) if lv else {}
+        llr      = live_log_rets()
+        today    = datetime.now()
+
         for i, ticker in enumerate(TICKERS):
+            label   = TICKER_LABELS[ticker]
+            color   = TICKER_COLORS[i]
+            visible = "legendonly" if ticker in CUM_HIDDEN else True
+            grp     = f"grp_{ticker.replace('^','')}"
+
+            # ── Historical line ───────────────────────────────────────────────
             col         = d[1][ticker].dropna()
             ret_aligned = d[0][ticker].dropna().reindex(col.index)
-            visible     = "legendonly" if ticker in CUM_HIDDEN else True
             fig.add_trace(go.Scatter(
-                x=col.index.to_pydatetime(), y=col.values * 100,
-                name=TICKER_LABELS[ticker], mode="lines", visible=visible,
-                line=dict(color=TICKER_COLORS[i], width=2),
+                x=col.index.to_pydatetime(),
+                y=col.values * 100,
+                name=label,
+                mode="lines",
+                visible=visible,
+                legendgroup=grp,
+                line=dict(color=color, width=2),
                 customdata=ret_aligned.values * 100,
                 hovertemplate=(
                     "%{x|%d %b %Y}<br>"
                     "Cumulative: <b>%{y:.2f}%</b><br>"
                     "Day return: <b>%{customdata:.2f}%</b>"
-                    "<extra>" + TICKER_LABELS[ticker] + "</extra>")))
-        if lv:
-            live_cum = compute_live_cum_return(d[1], lv, TICKERS)
-            today    = datetime.now()
-            for i, ticker in enumerate(TICKERS):
-                lc = live_cum.get(ticker)
-                if lc is None: continue
-                visible   = "legendonly" if ticker in CUM_HIDDEN else True
-                last_date = d[1][ticker].dropna().index[-1].to_pydatetime()
-                last_val  = float(d[1][ticker].dropna().iloc[-1]) * 100
-                live_ret  = compute_live_log_return(lv, [ticker])[ticker]
+                    f"<extra>{label}</extra>"
+                ),
+            ))
+
+            # ── Live connector + dot ──────────────────────────────────────────
+            lc       = live_cum.get(ticker)
+            live_ret = llr.get(ticker) if llr else None
+
+            if lc is not None:
+                last_date = col.index[-1].to_pydatetime()
+                last_val  = float(col.iloc[-1]) * 100
+
                 fig.add_trace(go.Scatter(
-                    x=[last_date, today], y=[last_val, lc * 100],
-                    mode="lines", visible=visible,
-                    line=dict(color=TICKER_COLORS[i], width=1.5, dash="dot"),
-                    showlegend=False, hoverinfo="skip"))
+                    x=[last_date, today],
+                    y=[last_val, lc * 100],
+                    mode="lines",
+                    visible=visible,
+                    legendgroup=grp,
+                    showlegend=False,
+                    line=dict(color=color, width=1.5, dash="dot"),
+                    hoverinfo="skip",
+                ))
+
                 fig.add_trace(go.Scatter(
-                    x=[today], y=[lc * 100],
-                    mode="markers+text", visible=visible,
-                    marker=dict(symbol="circle", size=10,
-                                color=TICKER_COLORS[i],
+                    x=[today],
+                    y=[lc * 100],
+                    mode="markers+text",
+                    visible=visible,
+                    legendgroup=grp,
+                    showlegend=False,
+                    marker=dict(symbol="circle", size=10, color=color,
                                 line=dict(color="white", width=1.5)),
-                    text=[f"  {TICKER_LABELS[ticker]}"],
+                    text=[f"  {label}"],
                     textposition="middle right",
-                    textfont=dict(size=9, color=TICKER_COLORS[i]),
-                    name=f"{TICKER_LABELS[ticker]} (live)",
-                    customdata=[[live_ret * 100
-                                 if live_ret is not None
-                                 else float("nan")]],
+                    textfont=dict(size=9, color=color),
+                    customdata=[[live_ret * 100 if live_ret is not None else float("nan")]],
                     hovertemplate=(
                         "%{x|%d %b %Y %H:%M}<br>"
                         "Cumulative: <b>%{y:.2f}%</b><br>"
                         "Day return: <b>%{customdata[0]:.2f}%</b>"
-                        "<extra>" + TICKER_LABELS[ticker] +
-                        " — live</extra>")))
+                        f"<extra>{label} — live</extra>"
+                    ),
+                ))
+
+            # ── Forecast connector + diamond ──────────────────────────────────
+            if fc_cum:
+                fc = fc_cum.get(ticker)
+                if fc is not None:
+                    if lc is not None:
+                        conn_x = [today,            fc["fc_date"]]
+                        conn_y = [lc * 100,          fc["fc_cum"]]
+                    else:
+                        conn_x = [fc["anchor_date"], fc["fc_date"]]
+                        conn_y = [fc["anchor_cum"],  fc["fc_cum"]]
+
+                    fig.add_trace(go.Scatter(
+                        x=conn_x, y=conn_y,
+                        mode="lines",
+                        visible=visible,
+                        legendgroup=grp,
+                        showlegend=False,
+                        line=dict(color=color, width=1, dash="dash"),
+                        hoverinfo="skip",
+                    ))
+
+                    fig.add_trace(go.Scatter(
+                        x=[fc["fc_date"]],
+                        y=[fc["fc_cum"]],
+                        mode="markers",
+                        visible=visible,
+                        legendgroup=grp,
+                        showlegend=False,
+                        marker=dict(symbol="diamond", size=11, color=color,
+                                    line=dict(color="white", width=1.5)),
+                        hovertemplate=(
+                            "%{x|%d %b %Y}<br>"
+                            f"Forecast cumulative: <b>%{{y:.2f}}%</b><br>"
+                            f"Forecast return: <b>{fc['fc_return']:+.3f}%</b><br>"
+                            f"68% CI: [{fc['fc_68_low']:+.3f}%, "
+                            f"{fc['fc_68_high']:+.3f}%]"
+                            f"<extra>{label} — GARCH forecast</extra>"
+                        ),
+                    ))
+
         layout = plotly_layout(theme, height=380)
         layout.update(
-            xaxis=dict(type="date", gridcolor=theme["plot_grid"],
-                       zeroline=False),
+            xaxis=dict(type="date", gridcolor=theme["plot_grid"], zeroline=False),
             yaxis=dict(title="Cumulative return (%)", ticksuffix="%",
                        gridcolor=theme["plot_grid"],
                        zeroline=True, zerolinecolor=theme["plot_grid"]),
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                        xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"))
-        # ── GARCH forecast diamonds ───────────────────────────────────────────
-        fc_cum = forecast_cum.get()
-        if fc_cum:
-            for i, ticker in enumerate(TICKERS):
-                fc = fc_cum.get(ticker)
-                if fc is None: continue
-                visible = "legendonly" if ticker in CUM_HIDDEN else True
-
-                # Line from anchor to forecast point
-                fig.add_trace(go.Scatter(
-                    x=[fc["anchor_date"], fc["fc_date"]],
-                    y=[fc["anchor_cum"],  fc["fc_cum"]],
-                    mode="lines",
-                    visible=visible,
-                    line=dict(color=TICKER_COLORS[i], width=1, dash="dot"),
-                    showlegend=False,
-                    hoverinfo="skip"))
-
-                # Forecast diamond
-                fig.add_trace(go.Scatter(
-                    x=[fc["fc_date"]],
-                    y=[fc["fc_cum"]],
-                    mode="markers",
-                    visible=visible,
-                    marker=dict(symbol="diamond", size=11,
-                                color=TICKER_COLORS[i],
-                                line=dict(color="white", width=1.5)),
-                    showlegend=False,
-                    hovertemplate=(
-                        f"%{{x|%d %b %Y}}<br>"
-                        f"Forecast cumulative: <b>%{{y:.2f}}%</b><br>"
-                        f"Forecast return: <b>{fc['fc_return']:+.3f}%</b><br>"
-                        f"68% CI: [{fc['fc_68_low']:+.3f}%, "
-                        f"{fc['fc_68_high']:+.3f}%]"
-                        f"<extra>{TICKER_LABELS[ticker]} — GARCH forecast</extra>"
-                    )))
+                        xanchor="right", x=1, bgcolor="rgba(0,0,0,0)"),
+        )
         fig.update_layout(**layout)
         return fig
 
