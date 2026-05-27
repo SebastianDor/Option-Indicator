@@ -1196,12 +1196,10 @@ def server(input, output, session):
 
     @render.ui
     def model_loading_banner_analysis():
-        _ = input.active_theme()
         return _build_loading_banner()
 
     @render.ui
     def model_loading_banner_directional():
-        _ = input.active_theme()
         return _build_loading_banner()
 
     # ── Model description card ────────────────────────────────────────────────
@@ -1295,7 +1293,6 @@ def server(input, output, session):
 
     @render.ui
     def garch_prob_content():
-        _   = input.active_theme()
         c   = current_theme()
         res = all_model_results.get()
         mid = selected_model_id()
